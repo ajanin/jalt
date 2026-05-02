@@ -42,6 +42,7 @@ function jalt:GetCurrentCharacter()
             bank       = {},
             equipped   = {},
             currencies = {},
+            mail       = {},
         }
         self.db.global.characters[key] = char
     end
@@ -83,6 +84,24 @@ function jalt:OnEnable()
     self:RegisterEvent("GUILDBANKFRAME_OPENED", "OnGuildBankOpened")
     self:RegisterEvent("GUILDBANKBAGSLOTS_CHANGED", "OnGuildBankSlotsChanged")
     self:RegisterEvent("CURRENCY_DISPLAY_UPDATE", "OnCurrencyUpdate")
+    self:RegisterEvent("MAIL_SEND_SUCCESS", "OnMailSendSuccess")
+    self:RegisterEvent("MAIL_FAILED", "OnMailFailed")
+
+    if not jalt.__mailHooksInstalled then
+        jalt.__mailHooksInstalled = true
+        hooksecurefunc("SendMail", function(recipient)
+            if jalt.Data then jalt.Data:CaptureOutgoingMail(recipient) end
+        end)
+        hooksecurefunc("TakeInboxItem", function(mailIndex, attachIndex)
+            if jalt.Data then jalt.Data:ConsumeMailAttachment(mailIndex, attachIndex) end
+        end)
+        hooksecurefunc("AutoLootMailItem", function(mailIndex)
+            if jalt.Data then jalt.Data:ConsumeAllMailAttachments(mailIndex) end
+        end)
+        hooksecurefunc("DeleteInboxItem", function(mailIndex)
+            if jalt.Data then jalt.Data:ConsumeAllMailAttachments(mailIndex) end
+        end)
+    end
 
     if IsLoggedIn() then
         self:OnPlayerLogin()
@@ -185,6 +204,17 @@ function jalt:OnCurrencyUpdate()
     end
 end
 
+function jalt:OnMailSendSuccess()
+    if self.Data then
+        self.Data:CommitOutgoingMail()
+        self.Data:RebuildItemIndex()
+    end
+end
+
+function jalt:OnMailFailed()
+    if self.Data then self.Data:DiscardOutgoingMail() end
+end
+
 function jalt:OnSlashCommand(input)
     input = input and input:match("^%s*(.-)%s*$") or ""
     if input == "" then
@@ -208,12 +238,20 @@ function jalt:OnSlashCommand(input)
             self.Data:RebuildItemIndex()
             self:Print("rescanned current character")
         end
+    elseif cmd == "clearmail" then
+        if self.Data then
+            local who = rest ~= "" and rest or nil
+            self.Data:ClearMail(who)
+            self.Data:RebuildItemIndex()
+            self:Print(who and ("cleared mail for " .. who) or "cleared mail for all characters")
+        end
     elseif cmd == "help" or cmd == "?" then
         self:Print("|cff7fbfffjalt|r commands:")
-        self:Print("  /jalt              - open the main window")
-        self:Print("  /jalt search <pat> - search items by Lua pattern")
-        self:Print("  /jalt rescan       - force rescan of current character")
-        self:Print("  /jalt debug        - toggle debug output")
+        self:Print("  /jalt                  - open the main window")
+        self:Print("  /jalt search <pat>     - search items by Lua pattern")
+        self:Print("  /jalt rescan           - force rescan of current character")
+        self:Print("  /jalt clearmail [<ch>] - clear recorded outgoing mail")
+        self:Print("  /jalt debug            - toggle debug output")
     else
         if self.Search then self.Search:Run(input) end
     end

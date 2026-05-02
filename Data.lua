@@ -6,12 +6,19 @@ jalt.Data = Data
 
 Data.itemIndex = {}
 
+local ATTACHMENTS_MAX_SEND = 12
+local ATTACHMENTS_MAX_RECEIVE = 16
+local pendingSend = nil
+
 local EQUIPMENT_SLOTS = {
-    [1]  = "Head",     [2]  = "Neck",     [3]  = "Shoulder", [4]  = "Shirt",
-    [5]  = "Chest",    [6]  = "Waist",    [7]  = "Legs",     [8]  = "Feet",
-    [9]  = "Wrist",    [10] = "Hands",    [11] = "Ring 1",   [12] = "Ring 2",
-    [13] = "Trinket 1",[14] = "Trinket 2",[15] = "Back",     [16] = "Main Hand",
-    [17] = "Off Hand", [18] = "Ranged",   [19] = "Tabard",
+    [1]  = "Head",         [2]  = "Neck",         [3]  = "Shoulder",     [4]  = "Shirt",
+    [5]  = "Chest",        [6]  = "Waist",        [7]  = "Legs",         [8]  = "Feet",
+    [9]  = "Wrist",        [10] = "Hands",        [11] = "Ring 1",       [12] = "Ring 2",
+    [13] = "Trinket 1",    [14] = "Trinket 2",    [15] = "Back",         [16] = "Main Hand",
+    [17] = "Off Hand",     [18] = "Ranged",       [19] = "Tabard",
+    [20] = "Prof 1 Tool",  [21] = "Prof 1 Gear 1",[22] = "Prof 1 Gear 2",
+    [23] = "Prof 2 Tool",  [24] = "Prof 2 Gear 1",[25] = "Prof 2 Gear 2",
+    [26] = "Cooking Tool", [27] = "Cooking Gear", [28] = "Fishing Tool",
 }
 Data.EQUIPMENT_SLOTS = EQUIPMENT_SLOTS
 
@@ -119,11 +126,115 @@ function Data:ScanWarbandBank()
     end
 end
 
+local function ResolveRecipientCharKey(recipient)
+    if not recipient or recipient == "" then return nil end
+    local name, realm = recipient:match("^([^-]+)-(.+)$")
+    if not name then
+        name = recipient
+        realm = GetRealmName()
+    end
+    if not name or not realm then return nil end
+    return realm .. " - " .. name
+end
+
+function Data:CaptureOutgoingMail(recipient)
+    pendingSend = nil
+    local key = ResolveRecipientCharKey(recipient)
+    if not key then return end
+    if not jalt.db.global.characters[key] then return end
+    local sender = UnitName("player")
+    local slots = {}
+    for i = 1, ATTACHMENTS_MAX_SEND do
+        if HasSendMailItem(i) then
+            local link = GetSendMailItemLink(i)
+            local _, itemID, _, count = GetSendMailItem(i)
+            if link and itemID then
+                slots[i] = { itemID = itemID, count = count or 1, itemLink = link }
+            end
+        end
+    end
+    if next(slots) == nil then return end
+    pendingSend = { recipientKey = key, sender = sender, slots = slots }
+end
+
+function Data:CommitOutgoingMail()
+    if not pendingSend then return end
+    local recipient = jalt.db.global.characters[pendingSend.recipientKey]
+    if not recipient then pendingSend = nil; return end
+    recipient.mail = recipient.mail or {}
+    local nextKey = (recipient.__mailSeq or 0) + 1
+    recipient.__mailSeq = nextKey
+    recipient.mail[nextKey] = { sender = pendingSend.sender, slots = pendingSend.slots }
+    pendingSend = nil
+end
+
+function Data:DiscardOutgoingMail()
+    pendingSend = nil
+end
+
+local function RemoveMatchingMailRecord(char, itemID, count)
+    if not char or not char.mail then return false end
+    for mailKey, mailEntry in pairs(char.mail) do
+        for slotKey, entry in pairs(mailEntry.slots or {}) do
+            if entry.itemID == itemID and entry.count == count then
+                mailEntry.slots[slotKey] = nil
+                if next(mailEntry.slots) == nil then
+                    char.mail[mailKey] = nil
+                end
+                return true
+            end
+        end
+    end
+    return false
+end
+
+function Data:ConsumeMailAttachment(mailIndex, attachIndex)
+    if not HasInboxItem or not HasInboxItem(mailIndex, attachIndex) then return end
+    local _, itemID, _, count = GetInboxItem(mailIndex, attachIndex)
+    if not itemID then return end
+    local _, char = jalt:GetCurrentCharacter()
+    if RemoveMatchingMailRecord(char, itemID, count or 1) then
+        self:RebuildItemIndex()
+    end
+end
+
+function Data:ConsumeAllMailAttachments(mailIndex)
+    if not HasInboxItem then return end
+    local _, char = jalt:GetCurrentCharacter()
+    local removedAny = false
+    for i = 1, ATTACHMENTS_MAX_RECEIVE do
+        if HasInboxItem(mailIndex, i) then
+            local _, itemID, _, count = GetInboxItem(mailIndex, i)
+            if itemID and RemoveMatchingMailRecord(char, itemID, count or 1) then
+                removedAny = true
+            end
+        end
+    end
+    if removedAny then self:RebuildItemIndex() end
+end
+
+function Data:ClearMail(charName)
+    local chars = jalt.db.global.characters
+    if charName then
+        for key, char in pairs(chars) do
+            if key == charName or key:match("- " .. charName .. "$") then
+                char.mail = {}
+                char.__mailSeq = nil
+            end
+        end
+    else
+        for _, char in pairs(chars) do
+            char.mail = {}
+            char.__mailSeq = nil
+        end
+    end
+end
+
 function Data:ScanEquipment()
     local _, char = jalt:GetCurrentCharacter()
     if not char then return end
     char.equipped = {}
-    for slotID = 1, 19 do
+    for slotID in pairs(EQUIPMENT_SLOTS) do
         local link = GetInventoryItemLink("player", slotID)
         if link then
             local itemID = GetItemIDFromLink(link)
@@ -193,6 +304,8 @@ function Data:ScanCurrencies()
             end
         end
     end
+
+    self.currenciesVersion = (self.currenciesVersion or 0) + 1
 end
 
 local function ScanGuildBankTabSlots(tab)
@@ -308,6 +421,14 @@ function Data:RebuildItemIndex()
                     1,
                     entry.itemLink
                 )
+            end
+        end
+        if char.mail then
+            for _, mailEntry in pairs(char.mail) do
+                local detail = mailEntry.sender and ("Mail from " .. mailEntry.sender) or "Mail"
+                for _, entry in pairs(mailEntry.slots or {}) do
+                    AddIndexEntry(entry.itemID, charKey, "mail", detail, entry.count, entry.itemLink)
+                end
             end
         end
     end

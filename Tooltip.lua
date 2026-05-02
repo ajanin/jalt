@@ -10,6 +10,7 @@ local LOCATION_COLORS = {
     guildbank   = "|cffff80ff",
     warbandbank = "|cffffd200",
     equipped    = "|cff80ff80",
+    mail        = "|cffff8000",
 }
 
 local function FormatRight(entry)

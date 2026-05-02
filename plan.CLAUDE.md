@@ -1,5 +1,7 @@
 # jalt, a WoW Inventory Addon
 
+# This was the original prompt used to seed the project. It is not up to date. See @CLAUDE.md.
+
 ## Project Overview
 
 A World of Warcraft addon (Retail, WoW: Midnight / patch 12.x) that tracks item inventories, equipment, and currencies across all characters on an account. Focused and lean — no DataStore abstraction layer, no unnecessary features.

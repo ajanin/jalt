@@ -11,8 +11,11 @@ jalt.Window = Window
 local frame
 local currentChar
 
-local SLOT_ORDER = { 1, 2, 3, 15, 5, 4, 9, 6, 7, 8, 16, 17, 18, 19, 10, 11, 12, 13, 14 }
-local OPTIONAL_SLOTS = { [4] = true, [18] = true, [19] = true }  -- Shirt, Ranged, Tabard
+local GEAR_SLOT_ORDER = { 1, 2, 3, 15, 5, 4, 9, 6, 7, 8, 16, 17, 18, 19, 10, 11, 12, 13, 14 }
+local GEAR_OPTIONAL_SLOTS = { [4] = true, [18] = true, [19] = true }  -- Shirt, Ranged, Tabard
+
+local PROF_SLOT_ORDER = { 20, 21, 22, 23, 24, 25, 26, 27, 28 }
+local PROF_OPTIONAL_SLOTS = {}  -- all profession slots count toward avg/min
 
 local function ResolveIlvl(item)
     if not item then return nil end
@@ -25,11 +28,11 @@ local function ResolveIlvl(item)
     return nil
 end
 
-local function ComputeIlvlSummary(equipped)
+local function ComputeIlvlSummary(equipped, slotOrder, optionalSlots)
     if not equipped then return nil end
     local count, sum, minIlvl, minSlot = 0, 0, nil, nil
-    for slotID = 1, 19 do
-        if not OPTIONAL_SLOTS[slotID] then
+    for _, slotID in ipairs(slotOrder) do
+        if not optionalSlots[slotID] then
             local ilvl = ResolveIlvl(equipped[slotID])
             if ilvl then
                 count = count + 1
@@ -52,10 +55,10 @@ local function ClassColor(class)
     return "|cffffffff"
 end
 
-local function FormatCharLabel(charKey, char)
+local function FormatCharLabel(charKey, char, slotOrder, optionalSlots)
     local color = ClassColor(char and char.class)
     local lvl = char and char.level and (" (" .. char.level .. ")") or ""
-    local summary = char and ComputeIlvlSummary(char.equipped)
+    local summary = char and ComputeIlvlSummary(char.equipped, slotOrder, optionalSlots)
     local ilvlPart = ""
     if summary then
         ilvlPart = string.format("  |cffffd200%d|r|cffaaaaaa/%d|r",
@@ -98,7 +101,7 @@ local function MakeSlotWidget(slotID, equipped)
     return icon
 end
 
-local function RenderGear(container, charKey)
+local function RenderGear(container, charKey, slotOrder, optionalSlots)
     container:ReleaseChildren()
 
     local chars = jalt.Data:GetCharacters()
@@ -108,7 +111,7 @@ local function RenderGear(container, charKey)
     dropdown:SetLabel("Character")
     local list, order = {}, {}
     for _, k in ipairs(keys) do
-        list[k] = FormatCharLabel(k, chars[k])
+        list[k] = FormatCharLabel(k, chars[k], slotOrder, optionalSlots)
         table.insert(order, k)
     end
     dropdown:SetList(list, order)
@@ -116,7 +119,7 @@ local function RenderGear(container, charKey)
     dropdown:SetWidth(360)
     dropdown:SetCallback("OnValueChanged", function(_, _, key)
         currentChar = key
-        RenderGear(container, key)
+        RenderGear(container, key, slotOrder, optionalSlots)
     end)
     container:AddChild(dropdown)
 
@@ -135,7 +138,7 @@ local function RenderGear(container, charKey)
         return
     end
 
-    local summary = ComputeIlvlSummary(char.equipped)
+    local summary = ComputeIlvlSummary(char.equipped, slotOrder, optionalSlots)
     local summaryLabel = AceGUI:Create("Label")
     if summary then
         local minSlotName = jalt.Data.EQUIPMENT_SLOTS[summary.minSlot] or ("Slot " .. summary.minSlot)
@@ -154,13 +157,20 @@ local function RenderGear(container, charKey)
     grid:SetFullWidth(true)
     container:AddChild(grid)
 
-    for _, slotID in ipairs(SLOT_ORDER) do
+    for _, slotID in ipairs(slotOrder) do
         grid:AddChild(MakeSlotWidget(slotID, char.equipped and char.equipped[slotID]))
     end
 end
 
 function GearViewer:Render(container)
-    RenderGear(container, currentChar or PickDefaultCharKey())
+    RenderGear(container, currentChar or PickDefaultCharKey(), GEAR_SLOT_ORDER, GEAR_OPTIONAL_SLOTS)
+end
+
+local ProfessionGearViewer = {}
+jalt.ProfessionGearViewer = ProfessionGearViewer
+
+function ProfessionGearViewer:Render(container)
+    RenderGear(container, currentChar or PickDefaultCharKey(), PROF_SLOT_ORDER, PROF_OPTIONAL_SLOTS)
 end
 
 local function SelectGroup(container, _, group)
@@ -173,6 +183,8 @@ local function SelectGroup(container, _, group)
 
     if group == "gear" then
         GearViewer:Render(inner)
+    elseif group == "profgear" then
+        ProfessionGearViewer:Render(inner)
     elseif group == "currency" and jalt.CurrencyViewer then
         jalt.CurrencyViewer:Render(inner)
     end
@@ -215,8 +227,9 @@ function Window:Show()
     local tabs = AceGUI:Create("TabGroup")
     tabs:SetLayout("Fill")
     tabs:SetTabs({
-        { text = "Gear",     value = "gear" },
-        { text = "Currency", value = "currency" },
+        { text = "Gear",            value = "gear" },
+        { text = "Profession Gear", value = "profgear" },
+        { text = "Currency",        value = "currency" },
     })
     tabs:SetCallback("OnGroupSelected", SelectGroup)
     frame:AddChild(tabs)

@@ -14,14 +14,15 @@ jalt.lua              -- AceAddon core, event wiring, slash dispatch
 Data.lua              -- scanners + item index (jalt.Data)
 Tooltip.lua           -- TooltipDataProcessor hook (jalt.Tooltip)
 Search.lua            -- /jalt search results frame (jalt.Search)
-GearViewer.lua        -- main window + Gear tab (jalt.Window, jalt.GearViewer)
+GearViewer.lua        -- main window + Gear tab + Profession Gear tab
+                         (jalt.Window, jalt.GearViewer, jalt.ProfessionGearViewer)
 CurrencyViewer.lua    -- Currency tab (jalt.CurrencyViewer)
 libs/                 -- embedded Ace3 + LibStub + CallbackHandler
 ```
 
-`jalt.Window` lives in `GearViewer.lua` (not its own file). The main window is a TabGroup hosting the Gear and Currency views.
+`jalt.Window` and `jalt.ProfessionGearViewer` both live in `GearViewer.lua` (not their own files). The main window is a TabGroup hosting the Gear, Profession Gear, and Currency views. The two gear viewers share `RenderGear` — each passes its own `slotOrder` and `optionalSlots` so the avg/min ilvl summary is computed independently per tab. They share `currentChar` so switching tabs doesn't reset the dropdown.
 
-Modules attach themselves to the addon object: `jalt.Data`, `jalt.Tooltip`, `jalt.Search`, `jalt.GearViewer`, `jalt.CurrencyViewer`, `jalt.Window`. All cross-module access goes through these fields. The addon is also exposed as `_G.jalt` for convenience while debugging.
+Modules attach themselves to the addon object: `jalt.Data`, `jalt.Tooltip`, `jalt.Search`, `jalt.GearViewer`, `jalt.ProfessionGearViewer`, `jalt.CurrencyViewer`, `jalt.Window`. All cross-module access goes through these fields. The addon is also exposed as `_G.jalt` for convenience while debugging.
 
 Each file starts with `local ADDON_NAME = ...` and `LibStub("AceAddon-3.0"):GetAddon(ADDON_NAME)` — preserve that pattern when adding new files. `jalt.lua` itself uses `:NewAddon(...)`.
 
@@ -40,6 +41,7 @@ jaltDB.global = {
       bank       = { [bagID]   = { name, slots = { [slot] = {...} } } },
       equipped   = { [slotID]  = { itemID, ilvl, itemLink } },
       currencies = { [currencyID] = { count, name, icon } },
+      mail       = { [seq]     = { sender, slots = { [attachIndex] = { itemID, count, itemLink } } } },
     },
   },
   guildBank = {
@@ -66,6 +68,8 @@ Notes that bit us already:
 | Guild bank | `GUILDBANKFRAME_OPENED`, `GUILDBANKBAGSLOTS_CHANGED` | `Data:ScanGuildBank` / `ScanGuildBankTab` |
 | Equipment | `PLAYER_LOGIN`, `PLAYER_EQUIPMENT_CHANGED` | `Data:ScanEquipment` |
 | Currencies | `PLAYER_LOGIN`, `CURRENCY_DISPLAY_UPDATE` | `Data:ScanCurrencies` |
+| Mail (send) | `hooksecurefunc("SendMail")` + `MAIL_SEND_SUCCESS` / `MAIL_FAILED` | `Data:CaptureOutgoingMail` → `CommitOutgoingMail` / `DiscardOutgoingMail` |
+| Mail (recipient) | `hooksecurefunc("TakeInboxItem")` / `AutoLootMailItem` / `DeleteInboxItem` | `Data:ConsumeMailAttachment` / `ConsumeAllMailAttachments` |
 
 `OnPlayerLogin` does a full baseline scan (bags + equipment + currencies) and rebuilds the item index. It is also called manually from `OnEnable` if the player is already logged in (catches `/reload`).
 
@@ -79,7 +83,7 @@ Any scanner that mutates the data model **must** call `Data:RebuildItemIndex()` 
 
 `Data.itemIndex[itemID] = { {charKey, location, locDetail, count, itemLink}, ... }`.
 
-`location` is one of `"bags" | "bank" | "guildbank" | "warbandbank" | "equipped"` (those exact strings are used as keys in `Tooltip.LOCATION_COLORS` — keep them in sync).
+`location` is one of `"bags" | "bank" | "guildbank" | "warbandbank" | "equipped" | "mail"` (those exact strings are used as keys in `Tooltip.LOCATION_COLORS` — keep them in sync).
 
 `RebuildItemIndex()` does a full wipe-and-rebuild over every character + the warband + every guild bank. That's fine at current scale; if it ever shows up in profiles, prefer incremental updates over a smarter rebuild.
 
@@ -118,6 +122,7 @@ Dispatcher in `jalt:OnSlashCommand`:
 - `/jalt search <pattern>` — Lua-pattern search by item name
 - `/jalt <anything-not-a-known-cmd>` — also treated as a search pattern (convenience)
 - `/jalt rescan` — force re-scan of the current character
+- `/jalt clearmail [<charname>]` — wipe recorded outgoing mail (one character, or all if no arg)
 - `/jalt debug` — toggle `jalt.DEBUG`
 - `/jalt help` / `/jalt ?` — print command list
 
@@ -145,7 +150,12 @@ When adding a new subcommand, add it to the `if/elseif` chain *and* update the `
 6 Waist    7 Legs     8 Feet      9 Wrist   10 Hands
 11 Ring1  12 Ring2   13 Trinket1 14 Trinket2 15 Back
 16 MainHand 17 OffHand 18 Ranged  19 Tabard
+20 Prof1Tool 21 Prof1Gear1 22 Prof1Gear2
+23 Prof2Tool 24 Prof2Gear1 25 Prof2Gear2
+26 CookingTool 27 CookingGear 28 FishingTool
 ```
+
+`INVSLOT_LAST_EQUIPPED` is 19 in `wow-ui-source/Interface/AddOns/Blizzard_FrameXMLBase/Constants.lua`, so there are no `INVSLOT_*` constants for the profession slots — IDs 20–28 are hardcoded the same way Blizzard's own `Blizzard_ProfessionsCrafting.xml` does. IDs 29–30 (Fishing Gear) exist in the protocol but are commented out in current Blizzard XML; we don't scan them. Slots 1–19 render in the Gear tab; slots 20–28 render in the Profession Gear tab. Each tab has its own `optionalSlots` set: Gear excludes Shirt/Ranged/Tabard from the avg/min summary, Profession Gear excludes nothing (every equipped prof slot counts toward avg/min for that tab).
 
 Display names live in `Data.EQUIPMENT_SLOTS` (note "Ring 1" with a space, etc. — used in tooltip and gear UI labels).
 
@@ -164,12 +174,16 @@ Do not add LibDataBroker, LibItemInfo, or any DataStore variants. If a new Ace m
 
 ## Out of scope (don't add)
 
-Multi-Battle.net account sharing, profession tracking, quests, achievements, mail, AH integration, Classic/TBC/MoP-Classic compatibility. Cross-realm: don't break existing data if it shows up, but don't design for it.
+Multi-Battle.net account sharing, profession tracking (recipes, skill levels, cooldowns), quests, achievements, AH integration, Classic/TBC/MoP-Classic compatibility. Cross-realm: don't break existing data if it shows up, but don't design for it.
+
+Note: *equipped* profession gear (slots 20–28) is in scope and is tracked — those are just more inventory slots. The "no profession tracking" rule is about the profession system itself (skill points, recipes, CD timers).
+
+Mail tracking is **send-side only**, and only between characters that already exist in `jaltDB.global.characters`. We never bulk-scan an inbox; we capture at click-Send (`hooksecurefunc("SendMail", ...)`) and clear records via per-attachment hooks (`TakeInboxItem`, `AutoLootMailItem`, `DeleteInboxItem`). Sends to non-alts are dropped silently. Mail expiry (30-day return-to-sender) and server-rejected takes can leave stale records — `/jalt clearmail` is the manual reset.
 
 ---
 
 ## Reference
 
-For any Blizzard API that isn't extremely stable, check `../wow-ui-source` (a clone of https://github.com/Gethe/wow-ui-source). Other API references on the web are frequently stale post-Midnight.
+For any Blizzard API that isn't extremely stable, check `@../wow-ui-source` (a clone of https://github.com/Gethe/wow-ui-source). Other API references on the web are frequently stale post-Midnight.
 
 Known still-volatile areas: the warband bank (events and `Enum.BagIndex.AccountBankTab_*` were toggled on and off during the Midnight pre-patch in January 2026), and bank tab APIs generally (`C_Bank.FetchPurchasedBankTabData`, `BANK_TABS_CHANGED`).

@@ -66,8 +66,23 @@ local function CollectGroups()
     end)
     for _, g in ipairs(groups) do
         table.sort(g.rows, function(a, b) return (a.name or "") < (b.name or "") end)
+        for _, row in ipairs(g.rows) do
+            row.charKeys = {}
+            for k in pairs(row.chars) do table.insert(row.charKeys, k) end
+            table.sort(row.charKeys)
+        end
     end
     return groups
+end
+
+local cachedGroups, cachedVersion = nil, nil
+
+local function GetGroups()
+    local v = jalt.Data.currenciesVersion or 0
+    if cachedGroups and cachedVersion == v then return cachedGroups end
+    cachedGroups = CollectGroups()
+    cachedVersion = v
+    return cachedGroups
 end
 
 local function FormatCurrencyHeader(row)
@@ -77,10 +92,22 @@ local function FormatCurrencyHeader(row)
         icon, row.name or ("Currency " .. row.currencyID), star, row.total)
 end
 
+local function FormatCurrencyBlock(row)
+    local lines = { FormatCurrencyHeader(row) }
+    for _, charKey in ipairs(row.charKeys) do
+        local n = row.chars[charKey]
+        if n and n > 0 then
+            lines[#lines + 1] = string.format("    |cffaaaaaa%s|r  |cffffffff%d|r", charKey, n)
+        end
+    end
+    lines[#lines + 1] = " "
+    return table.concat(lines, "\n")
+end
+
 function CurrencyViewer:Render(container)
     container:ReleaseChildren()
 
-    local groups = CollectGroups()
+    local groups = GetGroups()
     if #groups == 0 then
         local label = AceGUI:Create("Label")
         label:SetText("No currency data yet. Log in on a character to capture it.")
@@ -96,30 +123,11 @@ function CurrencyViewer:Render(container)
         container:AddChild(heading)
 
         for _, row in ipairs(g.rows) do
-            local h = AceGUI:Create("Label")
-            h:SetText(FormatCurrencyHeader(row))
-            h:SetFullWidth(true)
-            h:SetFontObject(GameFontNormal)
-            container:AddChild(h)
-
-            local charKeys = {}
-            for k in pairs(row.chars) do table.insert(charKeys, k) end
-            table.sort(charKeys)
-
-            for _, charKey in ipairs(charKeys) do
-                local n = row.chars[charKey]
-                if n and n > 0 then
-                    local sub = AceGUI:Create("Label")
-                    sub:SetText(string.format("    |cffaaaaaa%s|r  |cffffffff%d|r", charKey, n))
-                    sub:SetFullWidth(true)
-                    container:AddChild(sub)
-                end
-            end
-
-            local spacer = AceGUI:Create("Label")
-            spacer:SetText(" ")
-            spacer:SetFullWidth(true)
-            container:AddChild(spacer)
+            local block = AceGUI:Create("Label")
+            block:SetText(FormatCurrencyBlock(row))
+            block:SetFullWidth(true)
+            block:SetFontObject(GameFontNormal)
+            container:AddChild(block)
         end
     end
 end
